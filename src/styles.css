@@ -839,7 +839,6 @@ h2 {
 
 .lobbyShell.theaterMode .lobbyTopbar,
 .lobbyShell.theaterMode .noticeBar,
-.lobbyShell.theaterMode .peopleRail,
 .lobbyShell.theaterMode .controlDock,
 .lobbyShell.theaterMode .approvalDock {
   display: none;
@@ -847,54 +846,66 @@ h2 {
 
 .lobbyShell.theaterMode .watchGrid {
   height: 100vh;
-  grid-template-columns: 1fr;
-  gap: 0;
+  grid-template-columns: 15% 70% 15%;
+  gap: 16px;
+  padding: 16px;
+  background: #000;
+}
+
+.lobbyShell.theaterMode .peopleRail {
+  height: 100%;
+  padding: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .lobbyShell.theaterMode .movieStage {
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   order: 0;
 }
 
 .lobbyShell.theaterMode .moviePanel,
-.moviePanel:fullscreen {
-  height: 100vh;
-  min-height: 100vh;
+.lobbyShell:fullscreen .moviePanel {
+  position: relative;
+  height: 100%;
+  min-height: 0;
   display: block;
   border: 0;
-  border-radius: 0;
+  border-radius: 8px;
   padding: 0;
   background: #000;
   box-shadow: none;
 }
 
 .lobbyShell.theaterMode .moviePanel::before,
-.moviePanel:fullscreen::before {
+.lobbyShell:fullscreen .moviePanel::before {
   display: none;
 }
 
 .lobbyShell.theaterMode .movieViewport,
-.moviePanel:fullscreen .movieViewport {
+.lobbyShell:fullscreen .movieViewport {
   width: 100%;
   height: 100%;
   aspect-ratio: auto;
   border: 0;
-  border-radius: 0;
+  border-radius: 8px;
   background: #000;
 }
 
 .lobbyShell.theaterMode .movieVideo,
-.moviePanel:fullscreen .movieVideo {
+.lobbyShell:fullscreen .movieVideo {
   object-fit: contain;
 }
 
 .lobbyShell.theaterMode .movieEmpty,
-.moviePanel:fullscreen .movieEmpty {
-  min-height: 100vh;
+.lobbyShell:fullscreen .movieEmpty {
+  height: 100%;
+  min-height: 0;
 }
 
 .lobbyShell.theaterMode .movieInfo,
-.moviePanel:fullscreen .movieInfo {
+.lobbyShell:fullscreen .movieInfo {
   position: absolute;
   top: 18px;
   left: 18px;
@@ -908,7 +919,7 @@ h2 {
 }
 
 .lobbyShell.theaterMode .seekBar,
-.moviePanel:fullscreen .seekBar {
+.lobbyShell:fullscreen .seekBar {
   position: absolute;
   left: 28px;
   right: 28px;
@@ -918,7 +929,7 @@ h2 {
 }
 
 .lobbyShell.theaterMode .timeRow,
-.moviePanel:fullscreen .timeRow {
+.lobbyShell:fullscreen .timeRow {
   position: absolute;
   left: 28px;
   right: 28px;
@@ -928,7 +939,7 @@ h2 {
 }
 
 .lobbyShell.theaterMode .movieControls,
-.moviePanel:fullscreen .movieControls {
+.lobbyShell:fullscreen .movieControls {
   position: absolute;
   left: 16px;
   right: 16px;
@@ -943,7 +954,7 @@ h2 {
 }
 
 .lobbyShell.theaterMode .compatibilityWarning,
-.moviePanel:fullscreen .compatibilityWarning {
+.lobbyShell:fullscreen .compatibilityWarning {
   position: absolute;
   left: 18px;
   right: 18px;

@@ -165,6 +165,7 @@ function App() {
   const guestMovieRef = useRef<HTMLVideoElement | null>(null);
   const movieInputRef = useRef<HTMLInputElement | null>(null);
   const movieShellRef = useRef<HTMLDivElement | null>(null);
+  const lobbyShellRef = useRef<HTMLDivElement | null>(null);
   const lastMovieSyncRef = useRef(0);
 
   const self = useMemo(() => lobby?.participants.find((participant) => participant.id === sessionId) ?? null, [lobby, sessionId]);
@@ -571,7 +572,7 @@ function App() {
 
     try {
       if (theaterMode) {
-        await movieShellRef.current?.requestFullscreen?.();
+        await lobbyShellRef.current?.requestFullscreen?.();
       } else if (document.fullscreenElement) {
         await document.exitFullscreen();
       }
@@ -646,7 +647,7 @@ function App() {
 
   if (view === "lobby" && lobby && self) {
     return (
-      <main className={`lobbyShell ${isTheaterMode ? "theaterMode" : ""}`}>
+      <main ref={lobbyShellRef} className={`lobbyShell ${isTheaterMode ? "theaterMode" : ""}`}>
         <header className="lobbyTopbar">
           <div className="brandLockup">
             <div className="brandMark">
