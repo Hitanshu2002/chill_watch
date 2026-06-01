@@ -1,0 +1,18 @@
+overview : chillwatch is an website for chill with friend. this is only based on frontend. in this a group of friend come online and saw movies and can talk with everyone using video call.
+
+
+requirements: 
+1.one is host and other all are guest. host will write his name and create a lobby with code and other can join lobby using giving their name and that code .now everyone can only went in lobby when host gives permission means when some one join lobby as guest then a pop up will go to host for accept or reject.
+2.our first page is home page where host can create a lobby and others can join.
+ now comes to lobby page when every one join lobby then host has some controls like he can remove anyone and now main part of our project is now host will have a option to play movie now host can select movie from his computer but movie do not load because movie size is big but movie will run on host computer but also previewing in lobby in center and in remaining left and right part all people are join using video call.
+3.all people has some features like they can turn of camera or trun on camera they can use filter etc and check according to yourself.
+4. host has some extra things like host can play movie pause skip etc all feature needed check it.
+5. other thing of host laptop should not be show on screen because of previsy purpose.
+6. app should be work fast because movie handling can take storage and time so optimized it and create it fast.
+7. every person has option to leave lobby and host has option to end lobby and suppose host cut directly then lobby should be destroyed and all are out of lobby also if any person reload page then lobby should be continue and if guests cut directly then they out of lobby .
+
+tech stack:
+use react + typescript for it
+no need to use any backend or database for it.
+
+this is the basic idea which comes first in my mind. first read this in detailed and if any improvement is needed then do it in this plan after you sure now it is perfect then start to implement it if you are not sure then update this idea. 

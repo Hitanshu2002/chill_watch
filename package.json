@@ -1,0 +1,33 @@
+{
+  "name": "chillwatch",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:client": "vite --host 0.0.0.0",
+    "dev:server": "tsx watch server/index.ts",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.server.json",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.server.json --noEmit",
+    "start": "node dist-server/server/index.js"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "express": "^4.21.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.5"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.17",
+    "@types/react-dom": "^18.3.5"
+  }
+}
