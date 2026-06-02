@@ -6,6 +6,8 @@ import {
   DoorOpen,
   Film,
   Gauge,
+  Globe,
+  Lock,
   LogOut,
   Maximize2,
   Mic,
@@ -161,6 +163,8 @@ function App() {
   const [movieFileName, setMovieFileName] = useState<string | null>(null);
   const [movieCompatibility, setMovieCompatibility] = useState<string | null>(null);
   const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(false);
+  const [isLobbyPublic, setIsLobbyPublic] = useState(false);
+  const [publicLobbies, setPublicLobbies] = useState<any[]>([]);
 
   const hostMovieRef = useRef<HTMLVideoElement | null>(null);
   const guestMovieRef = useRef<HTMLVideoElement | null>(null);
@@ -343,6 +347,25 @@ function App() {
   }, [applySnapshot, clearMovieStream, lobby?.participants, sessionId]);
 
   useEffect(() => {
+    if (view !== "home") return;
+
+    socket.emit("lobby:join-public-updates", (list: any) => {
+      setPublicLobbies(list || []);
+    });
+
+    const handlePublicList = (list: any) => {
+      setPublicLobbies(list || []);
+    };
+
+    socket.on("lobby:public-list", handlePublicList);
+
+    return () => {
+      socket.emit("lobby:leave-public-updates");
+      socket.off("lobby:public-list", handlePublicList);
+    };
+  }, [view]);
+
+  useEffect(() => {
     const video = guestMovieRef.current;
     if (!video) return;
 
@@ -413,7 +436,7 @@ function App() {
     setFormError(null);
     setNotice("Creating lobby...");
 
-    socket.emit("lobby:create", { name, sessionId }, (ack: CreateLobbyAck) => {
+    socket.emit("lobby:create", { name, sessionId, isPublic: isLobbyPublic }, (ack: CreateLobbyAck) => {
       if (!ack.ok) {
         setNotice(null);
         setFormError(ack.error);
@@ -437,6 +460,33 @@ function App() {
 
     setFormError(null);
     setNotice("Sending request...");
+    setRole("guest");
+    saveActiveSession({ code, name, role: "guest" });
+
+    socket.emit("lobby:join-request", { code, name, sessionId }, (ack: JoinLobbyAck) => {
+      if (!ack.ok) {
+        clearActiveSession();
+        setNotice(null);
+        setFormError(ack.error);
+        return;
+      }
+
+      if (ack.status === "waiting") {
+        setView("waiting");
+        setNotice("Waiting for host approval.");
+        return;
+      }
+
+      applySnapshot(ack.snapshot);
+      setNotice("Joined lobby.");
+    });
+  }
+
+  function handleEnterPublicLobby(code: string) {
+    const name = guestName.trim() || `Guest-${Math.floor(100 + Math.random() * 900)}`;
+
+    setFormError(null);
+    setNotice("Joining public lobby...");
     setRole("guest");
     saveActiveSession({ code, name, role: "guest" });
 
@@ -830,39 +880,99 @@ function App() {
         </div>
 
         <section className="entryGrid">
-          <form className="entryPanel" onSubmit={handleCreateLobby}>
-            <div className="panelTitle">
-              <Plus size={21} />
-              <h2>Create lobby</h2>
-            </div>
-            <label>
-              Name
-              <input value={hostName} onChange={(event) => setHostName(event.target.value)} placeholder="Host name" maxLength={28} />
-            </label>
-            <button className="primaryButton" type="submit">
-              <MonitorPlay size={18} />
-              Create
-            </button>
-          </form>
+          <div className="entryGridLeft">
+            <form className="entryPanel" onSubmit={handleCreateLobby}>
+              <div className="panelTitle">
+                <Plus size={21} />
+                <h2>Create lobby</h2>
+              </div>
+              <label>
+                Name
+                <input value={hostName} onChange={(event) => setHostName(event.target.value)} placeholder="Host name" maxLength={28} />
+              </label>
+              
+              <div className="visibilitySelector">
+                <span className="label">Lobby Visibility</span>
+                <div className="radioGroup">
+                  <button
+                    type="button"
+                    className={`radioLabel ${!isLobbyPublic ? "active" : ""}`}
+                    onClick={() => setIsLobbyPublic(false)}
+                  >
+                    <Lock size={15} />
+                    <span>Private</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`radioLabel ${isLobbyPublic ? "active" : ""}`}
+                    onClick={() => setIsLobbyPublic(true)}
+                  >
+                    <Globe size={15} />
+                    <span>Public</span>
+                  </button>
+                </div>
+              </div>
 
-          <form className="entryPanel" onSubmit={handleJoinLobby}>
+              <button className="primaryButton" type="submit">
+                <MonitorPlay size={18} />
+                Create
+              </button>
+            </form>
+
+            <form className="entryPanel" onSubmit={handleJoinLobby}>
+              <div className="panelTitle">
+                <UserPlus size={21} />
+                <h2>Join lobby</h2>
+              </div>
+              <label>
+                Name
+                <input value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Your name" maxLength={28} />
+              </label>
+              <label>
+                Code
+                <input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="ABC123" maxLength={6} />
+              </label>
+              <button className="secondaryButton" type="submit">
+                <BadgeCheck size={18} />
+                Request
+              </button>
+            </form>
+          </div>
+
+          <aside className="publicLobbiesPanel">
             <div className="panelTitle">
-              <UserPlus size={21} />
-              <h2>Join lobby</h2>
+              <Film size={21} />
+              <h2>Public lobbies</h2>
             </div>
-            <label>
-              Name
-              <input value={guestName} onChange={(event) => setGuestName(event.target.value)} placeholder="Your name" maxLength={28} />
-            </label>
-            <label>
-              Code
-              <input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="ABC123" maxLength={6} />
-            </label>
-            <button className="secondaryButton" type="submit">
-              <BadgeCheck size={18} />
-              Request
-            </button>
-          </form>
+            <div className="publicLobbiesList">
+              {publicLobbies.length === 0 ? (
+                <div className="noLobbies">
+                  <span>No active public lobbies</span>
+                </div>
+              ) : (
+                publicLobbies.map((pubLobby) => (
+                  <div key={pubLobby.code} className="publicLobbyRow">
+                    <div className="lobbyRowMeta">
+                      <strong>{pubLobby.hostName}'s lobby</strong>
+                      <span className="lobbyRowMovie">
+                        {pubLobby.movieFileName ? `Watching: ${pubLobby.movieFileName}` : "Selecting movie..."}
+                      </span>
+                    </div>
+                    <div className="lobbyRowActions">
+                      <span className="lobbyRowCount">{pubLobby.activeCount}/6</span>
+                      <button
+                        className="primaryButton compact"
+                        type="button"
+                        onClick={() => handleEnterPublicLobby(pubLobby.code)}
+                      >
+                        Enter
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </aside>
         </section>
 
         {(formError || notice) && <div className={formError ? "formMessage error" : "formMessage"}>{formError ?? notice}</div>}
