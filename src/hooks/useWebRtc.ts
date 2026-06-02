@@ -26,7 +26,7 @@ function peerIdFromKey(key: string) {
   return key.slice(key.indexOf(":") + 1);
 }
 
-function addMissingTracks(peer: RTCPeerConnection, stream: MediaStream | null) {
+function addMissingTracks(peer: RTCPeerConnection, stream: MediaStream | null, isMovie: boolean = false) {
   if (!stream) return false;
 
   let changed = false;
@@ -34,8 +34,44 @@ function addMissingTracks(peer: RTCPeerConnection, stream: MediaStream | null) {
 
   for (const track of stream.getTracks()) {
     if (!existingTrackIds.has(track.id)) {
-      peer.addTrack(track, stream);
+      if (isMovie) {
+        if (track.kind === "audio") {
+          console.log("Applying high fidelity media constraints to movie audio track");
+          try {
+            void track.applyConstraints({
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false
+            });
+          } catch (e) {
+            console.warn("Could not apply audio processing constraints to movie track:", e);
+          }
+        } else if (track.kind === "video") {
+          console.log("Setting contentHint = 'motion' on movie video track");
+          track.contentHint = "motion";
+        }
+      }
+      const sender = peer.addTrack(track, stream);
       changed = true;
+
+      if (isMovie && track.kind === "video" && sender) {
+        setTimeout(() => {
+          try {
+            const parameters = sender.getParameters();
+            if (!parameters.encodings) {
+              parameters.encodings = [{}];
+            }
+            parameters.encodings[0].maxBitrate = 8000000; // 8 Mbps for high quality movie stream
+            parameters.encodings[0].priority = "high";
+            parameters.encodings[0].networkPriority = "high";
+            void sender.setParameters(parameters).catch((err) => {
+              console.warn("Failed to set maxBitrate on movie sender:", err);
+            });
+          } catch (e) {
+            console.warn("Error setting movie sender parameters:", e);
+          }
+        }, 100);
+      }
     }
   }
 
@@ -79,7 +115,11 @@ export function useWebRtc({
         }
 
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: false,
+            autoGainControl: false
+          },
           video: {
             width: { ideal: 960 },
             height: { ideal: 540 },
@@ -195,13 +235,13 @@ export function useWebRtc({
         const mediaStream = stream ?? new MediaStream([event.track]);
 
         if (channel === "movie") {
-          setRemoteMovieStream(mediaStream);
+          setRemoteMovieStream(new MediaStream(mediaStream.getTracks()));
           return;
         }
 
         setRemoteMediaStreams((current) => ({
           ...current,
-          [participantId]: mediaStream
+          [participantId]: new MediaStream(mediaStream.getTracks())
         }));
       };
 
@@ -226,7 +266,7 @@ export function useWebRtc({
           void negotiate(channel, participantId);
         }
 
-        if (channel === "media" && selfId < participantId) {
+        if (channel === "media") {
           void negotiate(channel, participantId);
         }
       };
@@ -254,13 +294,13 @@ export function useWebRtc({
       const mediaPeer = ensurePeer("media", participant.id);
       const addedMediaTracks = addMissingTracks(mediaPeer, localStreamRef.current);
 
-      if ((addedMediaTracks || !mediaPeer.localDescription) && selfId < participant.id) {
+      if (addedMediaTracks || !mediaPeer.localDescription) {
         void negotiate("media", participant.id);
       }
 
       if (isHost && movieStreamRef.current && participant.role === "guest") {
         const moviePeer = ensurePeer("movie", participant.id);
-        const addedMovieTracks = addMissingTracks(moviePeer, movieStreamRef.current);
+        const addedMovieTracks = addMissingTracks(moviePeer, movieStreamRef.current, true);
 
         if (addedMovieTracks || !moviePeer.localDescription) {
           void negotiate("movie", participant.id);
@@ -370,13 +410,31 @@ export function useWebRtc({
     (stream: MediaStream) => {
       movieStreamRef.current = stream;
 
+      const handleTrackAdded = (event: MediaStreamTrackEvent) => {
+        console.log("Movie stream track added dynamically:", event.track.kind);
+        if (!lobby || !isHostRef.current) return;
+        for (const participant of lobby.participants) {
+          if (participant.id === selfId || participant.role !== "guest") continue;
+          const moviePeer = peersRef.current.get(peerKey("movie", participant.id));
+          if (moviePeer) {
+            const addedTracks = addMissingTracks(moviePeer, stream, true);
+            if (addedTracks) {
+              void negotiate("movie", participant.id);
+            }
+          }
+        }
+      };
+
+      stream.removeEventListener("addtrack", handleTrackAdded);
+      stream.addEventListener("addtrack", handleTrackAdded);
+
       if (!lobby || !isHostRef.current) return;
 
       for (const participant of lobby.participants) {
         if (participant.id === selfId || participant.role !== "guest") continue;
 
         const moviePeer = ensurePeer("movie", participant.id);
-        const addedTracks = addMissingTracks(moviePeer, stream);
+        const addedTracks = addMissingTracks(moviePeer, stream, true);
 
         if (addedTracks || !moviePeer.localDescription) {
           void negotiate("movie", participant.id);

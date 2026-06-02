@@ -171,7 +171,8 @@ function App() {
   const self = useMemo(() => lobby?.participants.find((participant) => participant.id === sessionId) ?? null, [lobby, sessionId]);
   const isInLobby = view === "lobby" && Boolean(self);
   const isHost = self?.role === "host";
-  const isTheaterMode = Boolean(lobby?.theaterMode);
+  const [localTheaterMode, setLocalTheaterMode] = useState(false);
+  const isTheaterMode = localTheaterMode;
 
   const { localStream, remoteMediaStreams, remoteMovieStream, mediaError, publishMovieStream, clearMovieStream } = useWebRtc({
     socket,
@@ -303,10 +304,6 @@ function App() {
       setLobby((current) => mergeMovie(current, payload));
     }
 
-    function handleMovieScreen(payload: MovieScreenPayload) {
-      setLobby((current) => (current ? { ...current, theaterMode: payload.theaterMode } : current));
-    }
-
     socket.on("participant:list", handleSnapshot);
     socket.on("lobby:pending", handlePending);
     socket.on("join:approved", handleApproved);
@@ -317,11 +314,14 @@ function App() {
     socket.on("movie:ready", handleMoviePayload);
     socket.on("movie:state", handleMoviePayload);
     socket.on("movie:ended", handleMoviePayload);
-    socket.on("movie:unloaded", () => setLobby((current) => (current ? { ...current, movie: null, theaterMode: false } : current)));
-    socket.on("movie:screen", handleMovieScreen);
+    socket.on("movie:unloaded", () => setLobby((current) => (current ? { ...current, movie: null } : current)));
     socket.on("permission:error", (payload: { participantId: string; message: string }) => {
       const participant = lobby?.participants.find((item) => item.id === payload.participantId);
       setNotice(`${participant?.name ?? "A participant"} has a media permission issue.`);
+    });
+    socket.on("participant:muted-by-host", (payload: { muted: boolean }) => {
+      setMicEnabled(!payload.muted);
+      socket.emit("participant:update", { micEnabled: !payload.muted });
     });
 
     return () => {
@@ -336,8 +336,8 @@ function App() {
       socket.off("movie:state", handleMoviePayload);
       socket.off("movie:ended", handleMoviePayload);
       socket.off("movie:unloaded");
-      socket.off("movie:screen", handleMovieScreen);
       socket.off("permission:error");
+      socket.off("participant:muted-by-host");
     };
   }, [applySnapshot, clearMovieStream, lobby?.participants, sessionId]);
 
@@ -362,10 +362,9 @@ function App() {
 
   useEffect(() => {
     function handleFullscreenChange() {
-      if (!isHost || !lobby?.theaterMode || document.fullscreenElement) return;
-
-      socket.emit("movie:screen", { theaterMode: false });
-      setLobby((current) => (current ? { ...current, theaterMode: false } : current));
+      if (!document.fullscreenElement) {
+        setLocalTheaterMode(false);
+      }
     }
 
     document.addEventListener("fullscreenchange", handleFullscreenChange);
@@ -373,7 +372,7 @@ function App() {
     return () => {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
-  }, [isHost, lobby?.theaterMode]);
+  }, []);
 
   function currentMovieState() {
     const video = hostMovieRef.current;
@@ -484,6 +483,10 @@ function App() {
     socket.emit("participant:remove", { participantId });
   }
 
+  function handleMuteParticipant(participantId: string, currentlyEnabled: boolean) {
+    socket.emit("participant:mute", { participantId, muted: currentlyEnabled });
+  }
+
   function leaveLobby() {
     if (isHost) {
       socket.emit("lobby:end");
@@ -565,10 +568,7 @@ function App() {
   }
 
   async function setMovieScreen(theaterMode: boolean) {
-    setLobby((current) => (current ? { ...current, theaterMode } : current));
-    socket.emit("movie:screen", { theaterMode });
-
-    if (!isHost) return;
+    setLocalTheaterMode(theaterMode);
 
     try {
       if (theaterMode) {
@@ -577,7 +577,7 @@ function App() {
         await document.exitFullscreen();
       }
     } catch {
-      setNotice(theaterMode ? "Theater mode synced. Native fullscreen was blocked by the browser." : "Theater mode synced.");
+      setNotice(theaterMode ? "Theater mode enabled. Native fullscreen was blocked by the browser." : "Theater mode exited.");
     }
   }
 
@@ -685,6 +685,8 @@ function App() {
                 stream={participant.id === sessionId ? localStream : remoteMediaStreams[participant.id]}
                 canRemove={isHost && participant.role === "guest"}
                 onRemove={removeParticipant}
+                canMute={isHost && participant.role === "guest"}
+                onMute={handleMuteParticipant}
               />
             ))}
           </aside>
@@ -726,6 +728,8 @@ function App() {
                 stream={participant.id === sessionId ? localStream : remoteMediaStreams[participant.id]}
                 canRemove={isHost && participant.role === "guest"}
                 onRemove={removeParticipant}
+                canMute={isHost && participant.role === "guest"}
+                onMute={handleMuteParticipant}
               />
             ))}
           </aside>
@@ -852,31 +856,44 @@ function ParticipantTile({
   selfId,
   stream,
   canRemove,
-  onRemove
+  onRemove,
+  canMute,
+  onMute
 }: {
   participant: Participant;
   selfId: string;
   stream?: MediaStream | null;
   canRemove: boolean;
   onRemove: (participantId: string) => void;
+  canMute: boolean;
+  onMute: (participantId: string, currentlyEnabled: boolean) => void;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const isSelf = participant.id === selfId;
 
   useEffect(() => {
     const video = videoRef.current;
-    if (!video || !stream) return;
+    if (!video) return;
 
-    video.srcObject = stream;
-    void video.play().catch(() => undefined);
+    if (stream) {
+      video.srcObject = stream;
+      void video.play().catch(() => undefined);
+    } else {
+      video.srcObject = null;
+    }
   }, [stream]);
 
   return (
     <article className={`participantTile ${participant.connection === "reconnecting" ? "reconnecting" : ""}`}>
       <div className="tileVideoWrap">
-        {participant.cameraEnabled && stream ? (
-          <video ref={videoRef} className={`tileVideo filter-${participant.filter}`} autoPlay playsInline muted={isSelf} />
-        ) : (
+        <video
+          ref={videoRef}
+          className={`tileVideo filter-${participant.filter} ${(!participant.cameraEnabled || !stream) ? "hiddenVideo" : ""}`}
+          autoPlay
+          playsInline
+          muted={isSelf}
+        />
+        {(!participant.cameraEnabled || !stream) && (
           <div className={`avatarFallback filter-${participant.filter}`}>{initials(participant.name)}</div>
         )}
       </div>
@@ -886,7 +903,18 @@ function ParticipantTile({
           <span>{participant.role === "host" ? "Host" : participant.connection === "online" ? "Guest" : "Rejoining"}</span>
         </div>
         <div className="tileActions">
-          {participant.micEnabled ? <Mic size={15} /> : <MicOff size={15} />}
+          {canMute ? (
+            <button
+              type="button"
+              className={`muteMiniButton ${!participant.micEnabled ? "muted" : ""}`}
+              onClick={() => onMute(participant.id, participant.micEnabled)}
+              title={participant.micEnabled ? "Mute participant" : "Unmute participant"}
+            >
+              {participant.micEnabled ? <Mic size={15} /> : <MicOff size={15} />}
+            </button>
+          ) : (
+            participant.micEnabled ? <Mic size={15} /> : <MicOff size={15} />
+          )}
           {participant.cameraEnabled ? <Video size={15} /> : <VideoOff size={15} />}
           {canRemove && (
             <button type="button" className="removeMiniButton" onClick={() => onRemove(participant.id)} title="Remove participant">
@@ -1014,55 +1042,71 @@ function MoviePanel({
         <span>{formatTime(movie?.duration ?? 0)}</span>
       </div>
 
-      {isHost && (
-        <div className="movieControls">
-          <input ref={movieInputRef} className="hiddenInput" type="file" accept="video/*" onChange={onMovieFile} />
-          <button className="iconTextButton" type="button" onClick={() => movieInputRef.current?.click()}>
-            <Upload size={17} />
-            Select movie
-          </button>
-          <button className="roundButton" type="button" onClick={() => onSkip(-10)} disabled={!movieUrl}>
-            <SkipBack size={18} />
-          </button>
-          <button className="playButton" type="button" onClick={onTogglePlayback} disabled={!movieUrl}>
-            {movie?.isPlaying ? <Pause size={21} /> : <Play size={21} />}
-          </button>
-          <button className="roundButton" type="button" onClick={() => onSkip(30)} disabled={!movieUrl}>
-            <SkipForward size={18} />
-          </button>
-          <button className="iconTextButton theaterButton" type="button" onClick={() => onScreen(!isTheaterMode)} disabled={!movieUrl}>
-            {isTheaterMode ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
-            {isTheaterMode ? "Exit theater" : "Theater"}
-          </button>
-          <label className="compactControl">
-            <Gauge size={16} />
-            <select value={movie?.playbackRate ?? 1} onChange={(event) => onRate(Number(event.target.value))} disabled={!movieUrl}>
-              <option value={0.75}>0.75x</option>
-              <option value={1}>1x</option>
-              <option value={1.25}>1.25x</option>
-              <option value={1.5}>1.5x</option>
-            </select>
-          </label>
-          <label className="compactControl volumeControl">
-            <Volume2 size={16} />
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              defaultValue="1"
-              disabled={!movieUrl}
-              onChange={(event) => {
-                if (hostMovieRef.current) hostMovieRef.current.volume = Number(event.target.value);
-              }}
-            />
-          </label>
+      <div className="movieControls">
+        {isHost ? (
+          <>
+            <input ref={movieInputRef} className="hiddenInput" type="file" accept="video/*" onChange={onMovieFile} />
+            <button className="iconTextButton" type="button" onClick={() => movieInputRef.current?.click()}>
+              <Upload size={17} />
+              Select movie
+            </button>
+          </>
+        ) : (
+          <span className="controlStatusBadge">Guest Mode</span>
+        )}
+        <button className="roundButton" type="button" onClick={() => onSkip(-10)} disabled={!isHost || !movieUrl}>
+          <SkipBack size={18} />
+        </button>
+        <button className="playButton" type="button" onClick={onTogglePlayback} disabled={!isHost || !movieUrl}>
+          {movie?.isPlaying ? <Pause size={21} /> : <Play size={21} />}
+        </button>
+        <button className="roundButton" type="button" onClick={() => onSkip(30)} disabled={!isHost || !movieUrl}>
+          <SkipForward size={18} />
+        </button>
+        <button
+          className="iconTextButton theaterButton"
+          type="button"
+          onClick={() => onScreen(!isTheaterMode)}
+          disabled={isHost ? !movieUrl : (!movie?.fileName && !hasRemoteMovie)}
+        >
+          {isTheaterMode ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
+          {isTheaterMode ? "Exit theater" : "Theater"}
+        </button>
+        <label className="compactControl">
+          <Gauge size={16} />
+          <select value={movie?.playbackRate ?? 1} onChange={(event) => onRate(Number(event.target.value))} disabled={!isHost || !movieUrl}>
+            <option value={0.75}>0.75x</option>
+            <option value={1}>1x</option>
+            <option value={1.25}>1.25x</option>
+            <option value={1.5}>1.5x</option>
+          </select>
+        </label>
+        <label className="compactControl volumeControl">
+          <Volume2 size={16} />
+          <input
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            defaultValue="1"
+            disabled={isHost ? !movieUrl : (!movie?.fileName && !hasRemoteMovie)}
+            onChange={(event) => {
+              const val = Number(event.target.value);
+              if (isHost) {
+                if (hostMovieRef.current) hostMovieRef.current.volume = val;
+              } else {
+                if (guestMovieRef.current) guestMovieRef.current.volume = val;
+              }
+            }}
+          />
+        </label>
+        {isHost && (
           <button className="secondaryButton compact" type="button" onClick={onUnload} disabled={!movieUrl}>
             <RotateCcw size={16} />
             Clear
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {movieCompatibility && <div className="compatibilityWarning">{movieCompatibility}</div>}
     </div>

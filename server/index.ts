@@ -388,6 +388,25 @@ io.on("connection", (socket) => {
     emitSnapshot(active.lobby);
   });
 
+  socket.on("participant:mute", (payload: { participantId: string; muted: boolean }) => {
+    const active = getLobbyFromSocket(socket);
+    if (!active || !isHost(socket, active.lobby)) return;
+
+    const { lobby } = active;
+    const participant = lobby.participants.get(payload.participantId);
+    if (!participant) return;
+
+    participant.micEnabled = !payload.muted;
+    io.to(lobby.code).emit("participant:updated", { participant });
+
+    const guestSocketId = lobby.sockets.get(payload.participantId);
+    if (guestSocketId) {
+      io.to(guestSocketId).emit("participant:muted-by-host", { muted: payload.muted });
+    }
+
+    emitSnapshot(lobby);
+  });
+
   socket.on("participant:remove", (payload: { participantId: string }) => {
     const active = getLobbyFromSocket(socket);
     if (!active || !isHost(socket, active.lobby)) return;
