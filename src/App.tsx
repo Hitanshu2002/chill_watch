@@ -168,6 +168,9 @@ function App() {
   const movieShellRef = useRef<HTMLDivElement | null>(null);
   const lobbyShellRef = useRef<HTMLDivElement | null>(null);
   const lastMovieSyncRef = useRef(0);
+  const hostAudioContextRef = useRef<AudioContext | null>(null);
+  const hostAudioSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const hostAudioDestRef = useRef<MediaStreamAudioDestinationNode | null>(null);
 
   const self = useMemo(() => lobby?.participants.find((participant) => participant.id === sessionId) ?? null, [lobby, sessionId]);
   const isInLobby = view === "lobby" && Boolean(self);
@@ -528,19 +531,62 @@ function App() {
     const video = hostMovieRef.current;
     if (!video) return;
 
-    const stream = captureVideoElement(video);
-    if (!stream) {
+    // Route audio to local speakers so host can hear it while capturing
+    try {
+      if (!hostAudioContextRef.current) {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        hostAudioContextRef.current = new AudioContextClass();
+      }
+
+      const audioCtx = hostAudioContextRef.current;
+      if (audioCtx.state === "suspended") {
+        void audioCtx.resume();
+      }
+
+      if (!hostAudioSourceRef.current) {
+        const source = audioCtx.createMediaElementSource(video);
+        source.connect(audioCtx.destination);
+        
+        const dest = audioCtx.createMediaStreamDestination();
+        source.connect(dest);
+        
+        hostAudioSourceRef.current = source;
+        hostAudioDestRef.current = dest;
+        console.log("Connected video element audio to Web Audio destination and media stream destination successfully");
+      }
+    } catch (e) {
+      console.warn("Web Audio routing failed or already connected:", e);
+    }
+
+    const videoStream = captureVideoElement(video);
+    if (!videoStream) {
       setMovieCompatibility("Movie streaming needs a Chromium browser with captureStream support.");
       return;
     }
 
-    publishMovieStream(stream);
+    let finalStream = videoStream;
+    if (hostAudioDestRef.current) {
+      const videoTracks = videoStream.getVideoTracks();
+      const audioTracks = hostAudioDestRef.current.stream.getAudioTracks();
+      finalStream = new MediaStream([
+        ...videoTracks,
+        ...audioTracks
+      ]);
+      console.log("Combined video capture stream with Web Audio destination audio track");
+    }
+
+    publishMovieStream(finalStream);
     emitMovieState("movie:ready");
   }
 
   async function toggleMoviePlayback() {
     const video = hostMovieRef.current;
     if (!video) return;
+
+    // Resume AudioContext upon user interaction to satisfy autoplay policies
+    if (hostAudioContextRef.current && hostAudioContextRef.current.state === "suspended") {
+      void hostAudioContextRef.current.resume();
+    }
 
     if (video.paused) {
       await video.play().catch(() => undefined);
@@ -1009,11 +1055,12 @@ function MoviePanel({
     <div className="moviePanel" ref={movieShellRef}>
       <div className="movieViewport">
         {isHost ? (
-          movieUrl ? (
+          <div style={{ width: "100%", height: "100%", position: "relative" }}>
             <video
               ref={hostMovieRef}
-              src={movieUrl}
+              src={movieUrl || undefined}
               className="movieVideo"
+              style={{ display: movieUrl ? "block" : "none" }}
               playsInline
               onLoadedMetadata={onLoaded}
               onPlay={onPlay}
@@ -1021,12 +1068,13 @@ function MoviePanel({
               onEnded={onEnded}
               onTimeUpdate={onTimeUpdate}
             />
-          ) : (
-            <div className="movieEmpty">
-              <Film size={50} />
-              <span>No movie selected</span>
-            </div>
-          )
+            {!movieUrl && (
+              <div className="movieEmpty">
+                <Film size={50} />
+                <span>No movie selected</span>
+              </div>
+            )}
+          </div>
         ) : hasRemoteMovie ? (
           <div style={{ position: "relative", width: "100%", height: "100%" }}>
             <video ref={guestMovieRef} className="movieVideo" autoPlay playsInline controls={false} />

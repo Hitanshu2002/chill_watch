@@ -15,7 +15,19 @@ type UseWebRtcOptions = {
 type PeerKey = `${WebRtcChannel}:${string}`;
 
 const rtcConfig: RTCConfiguration = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:openrelay.metered.ca:80" },
+    {
+      urls: [
+        "turn:openrelay.metered.ca:80",
+        "turn:openrelay.metered.ca:443",
+        "turns:openrelay.metered.ca:443"
+      ],
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    }
+  ]
 };
 
 function peerKey(channel: WebRtcChannel, participantId: string): PeerKey {
@@ -91,6 +103,7 @@ export function useWebRtc({
   const [remoteMediaStreams, setRemoteMediaStreams] = useState<Record<string, MediaStream>>({});
   const [remoteMovieStream, setRemoteMovieStream] = useState<MediaStream | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [retryTrigger, setRetryTrigger] = useState(0);
 
   const localStreamRef = useRef<MediaStream | null>(null);
   const movieStreamRef = useRef<MediaStream | null>(null);
@@ -114,22 +127,41 @@ export function useWebRtc({
           throw new Error("Camera and microphone are not available in this browser.");
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false
-          },
-          video: {
-            width: { ideal: 960 },
-            height: { ideal: 540 },
-            frameRate: { ideal: 24, max: 30 }
-          }
-        });
+        let stream: MediaStream;
+        let fallbackToAudioOnly = false;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: false,
+              autoGainControl: false
+            },
+            video: {
+              width: { ideal: 960 },
+              height: { ideal: 540 },
+              frameRate: { ideal: 24, max: 30 }
+            }
+          });
+        } catch (videoError) {
+          console.warn("Failed to get both audio and video, trying audio only:", videoError);
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: false,
+              autoGainControl: false
+            },
+            video: false
+          });
+          fallbackToAudioOnly = true;
+        }
 
         if (cancelled) {
           stream.getTracks().forEach((track) => track.stop());
           return;
+        }
+
+        if (fallbackToAudioOnly) {
+          socket.emit("participant:update", { cameraEnabled: false });
         }
 
         localStreamRef.current = stream;
@@ -165,6 +197,7 @@ export function useWebRtc({
     const peer = peersRef.current.get(key);
     if (!peer) return;
 
+    peer.onconnectionstatechange = null;
     peer.onicecandidate = null;
     peer.ontrack = null;
     peer.onnegotiationneeded = null;
@@ -172,6 +205,7 @@ export function useWebRtc({
     peersRef.current.delete(key);
     makingOfferRef.current.delete(key);
     pendingCandidatesRef.current.delete(key);
+    setRetryTrigger((prev) => prev + 1);
   }, []);
 
   const flushCandidates = useCallback(async (key: PeerKey, peer: RTCPeerConnection) => {
@@ -246,7 +280,21 @@ export function useWebRtc({
       };
 
       peer.onconnectionstatechange = () => {
-        if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+        if (peer.connectionState === "failed") {
+          console.log(`Peer connection state for ${key} failed. Cleaning up for retry.`);
+          if (channel === "media") {
+            setRemoteMediaStreams((current) => {
+              const next = { ...current };
+              delete next[participantId];
+              return next;
+            });
+          }
+
+          if (channel === "movie") {
+            setRemoteMovieStream(null);
+          }
+          closePeer(key);
+        } else if (["closed", "disconnected"].includes(peer.connectionState)) {
           if (channel === "media") {
             setRemoteMediaStreams((current) => {
               const next = { ...current };
@@ -307,7 +355,7 @@ export function useWebRtc({
         }
       }
     }
-  }, [closePeer, ensurePeer, isHost, isInLobby, lobby, localStream, negotiate, selfId]);
+  }, [closePeer, ensurePeer, isHost, isInLobby, lobby, localStream, negotiate, selfId, retryTrigger]);
 
   useEffect(() => {
     function queueCandidate(key: PeerKey, candidate: RTCIceCandidateInit) {
@@ -332,6 +380,13 @@ export function useWebRtc({
       if (offerCollision && !polite) return;
 
       try {
+        if (offerCollision) {
+          try {
+            await peer.setLocalDescription({ type: "rollback" });
+          } catch (rollbackErr) {
+            console.warn("Rollback failed:", rollbackErr);
+          }
+        }
         await peer.setRemoteDescription(new RTCSessionDescription(signal.description));
         await flushCandidates(key, peer);
 
@@ -346,7 +401,8 @@ export function useWebRtc({
           channel: signal.channel,
           description: peer.localDescription
         });
-      } catch {
+      } catch (err) {
+        console.error("Error in handleOffer:", err);
         closePeer(key);
       }
     }
@@ -361,7 +417,8 @@ export function useWebRtc({
       try {
         await peer.setRemoteDescription(new RTCSessionDescription(signal.description));
         await flushCandidates(key, peer);
-      } catch {
+      } catch (err) {
+        console.error("Error in handleAnswer:", err);
         closePeer(key);
       }
     }
