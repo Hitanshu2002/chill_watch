@@ -35,6 +35,7 @@ export type LobbySnapshot = {
   pendingRequests: JoinRequest[];
   movie: MovieMeta | null;
   theaterMode: boolean;
+  isPublic?: boolean;
 };
 
 export type ServerAck<T = unknown> =
@@ -73,4 +74,11 @@ export type MovieStatePayload = {
 
 export type MovieScreenPayload = {
   theaterMode: boolean;
+};
+
+export type PublicLobbyInfo = {
+  code: string;
+  hostName: string;
+  movieFileName: string | null;
+  activeCount: number;
 };

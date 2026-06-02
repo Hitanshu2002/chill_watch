@@ -14,7 +14,8 @@ import type {
   Participant,
   Role,
   ServerAck,
-  WebRtcSignal
+  WebRtcSignal,
+  PublicLobbyInfo
 } from "../shared/types.js";
 
 type SocketContext = {
@@ -33,6 +34,7 @@ type Lobby = {
   sockets: Map<string, string>;
   movie: MovieMeta | null;
   theaterMode: boolean;
+  isPublic: boolean;
   createdAt: number;
 };
 
@@ -102,13 +104,29 @@ function snapshot(lobby: Lobby): LobbySnapshot {
     }),
     pendingRequests: Array.from(lobby.pendingRequests.values()).map(({ socketId: _socketId, ...request }) => request),
     movie: lobby.movie,
-    theaterMode: lobby.theaterMode
+    theaterMode: lobby.theaterMode,
+    isPublic: lobby.isPublic
   };
 }
 
 function emitSnapshot(lobby: Lobby) {
   io.to(lobby.code).emit("participant:list", snapshot(lobby));
   io.to(lobby.hostSocketId).emit("lobby:pending", snapshot(lobby).pendingRequests);
+}
+
+function getPublicLobbiesList(): PublicLobbyInfo[] {
+  return Array.from(lobbies.values())
+    .filter((lobby) => lobby.isPublic)
+    .map((lobby) => ({
+      code: lobby.code,
+      hostName: lobby.participants.get(lobby.hostId)?.name ?? "Host",
+      movieFileName: lobby.movie?.fileName ?? null,
+      activeCount: lobby.participants.size
+    }));
+}
+
+function broadcastPublicLobbies() {
+  io.to("public-lobby-updates").emit("lobby:public-list", getPublicLobbiesList());
 }
 
 function timerKey(lobbyCode: string, sessionId: string) {
@@ -154,6 +172,10 @@ function endLobby(lobby: Lobby, reason: "host-ended" | "host-disconnected") {
   }
 
   io.to(lobby.code).emit("lobby:ended", { reason, code: lobby.code });
+
+  if (lobby.isPublic) {
+    broadcastPublicLobbies();
+  }
 }
 
 function removeParticipant(lobby: Lobby, participantId: string, reason: "left" | "removed" | "disconnected") {
@@ -182,6 +204,10 @@ function removeParticipant(lobby: Lobby, participantId: string, reason: "left" |
   lobby.sockets.delete(participantId);
   io.to(lobby.code).emit("participant:left", { participantId, code: lobby.code, reason });
   emitSnapshot(lobby);
+
+  if (lobby.isPublic) {
+    broadcastPublicLobbies();
+  }
 }
 
 function sendAck<T>(callback: unknown, response: ServerAck<T>) {
@@ -205,7 +231,7 @@ function relayWebRtc(socket: Socket, event: "webrtc:offer" | "webrtc:answer" | "
 }
 
 io.on("connection", (socket) => {
-  socket.on("lobby:create", (payload: { name: string; sessionId: string }, callback) => {
+  socket.on("lobby:create", (payload: { name: string; sessionId: string; isPublic?: boolean }, callback) => {
     const name = payload.name?.trim();
     const sessionId = payload.sessionId?.trim();
 
@@ -225,6 +251,7 @@ io.on("connection", (socket) => {
       sockets: new Map([[sessionId, socket.id]]),
       movie: null,
       theaterMode: false,
+      isPublic: Boolean(payload.isPublic),
       createdAt: Date.now()
     };
 
@@ -234,6 +261,10 @@ io.on("connection", (socket) => {
 
     sendAck(callback, { ok: true, snapshot: snapshot(lobby), participant: host });
     emitSnapshot(lobby);
+
+    if (lobby.isPublic) {
+      broadcastPublicLobbies();
+    }
   });
 
   socket.on("lobby:join-request", (payload: { code: string; name: string; sessionId: string }, callback) => {
@@ -267,6 +298,19 @@ io.on("connection", (socket) => {
 
     if (lobby.participants.size >= MAX_PARTICIPANTS) {
       sendAck(callback, { ok: false, error: "Lobby is full." });
+      return;
+    }
+
+    if (lobby.isPublic) {
+      const participant = makeParticipant(sessionId, name, "guest");
+      lobby.participants.set(participant.id, participant);
+      lobby.sockets.set(participant.id, socket.id);
+      socketContexts.set(socket.id, { lobbyCode: code, sessionId, role: "guest", status: "active" });
+      socket.join(code);
+      sendAck(callback, { ok: true, status: "approved", snapshot: snapshot(lobby), participant });
+      io.to(lobby.code).emit("participant:joined", { participant, code: lobby.code });
+      emitSnapshot(lobby);
+      broadcastPublicLobbies();
       return;
     }
 
@@ -435,6 +479,9 @@ io.on("connection", (socket) => {
     active.lobby.movie = payload;
     socket.to(active.lobby.code).emit("movie:ready", payload);
     emitSnapshot(active.lobby);
+    if (active.lobby.isPublic) {
+      broadcastPublicLobbies();
+    }
   });
 
   socket.on("movie:state", (payload: MovieStatePayload) => {
@@ -460,6 +507,20 @@ io.on("connection", (socket) => {
     active.lobby.theaterMode = false;
     socket.to(active.lobby.code).emit("movie:unloaded");
     emitSnapshot(active.lobby);
+    if (active.lobby.isPublic) {
+      broadcastPublicLobbies();
+    }
+  });
+
+  socket.on("lobby:join-public-updates", (callback) => {
+    socket.join("public-lobby-updates");
+    if (typeof callback === "function") {
+      callback(getPublicLobbiesList());
+    }
+  });
+
+  socket.on("lobby:leave-public-updates", () => {
+    socket.leave("public-lobby-updates");
   });
 
   socket.on("movie:screen", (payload: MovieScreenPayload) => {

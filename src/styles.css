@@ -216,7 +216,7 @@ h2 {
 
 .entryGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1.2fr 1fr;
   gap: 24px;
 }
 
@@ -1239,4 +1239,182 @@ h2 {
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+.entryGridLeft {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.entryGridLeft .entryPanel {
+  min-height: auto;
+}
+
+/* Visibility selector styling */
+.visibilitySelector {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.visibilitySelector .label {
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.visibilitySelector .radioGroup {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.visibilitySelector .radioLabel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: var(--muted);
+}
+
+.visibilitySelector .radioLabel span {
+  font-weight: 600;
+}
+
+.visibilitySelector .radioLabel.active {
+  border-color: var(--teal);
+  background: rgba(168, 85, 247, 0.1);
+  box-shadow: 0 0 15px rgba(168, 85, 247, 0.2);
+  color: var(--text);
+}
+
+/* Public lobbies panel styling */
+.publicLobbiesPanel {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02) 0%, rgba(255, 255, 255, 0) 100%),
+    rgba(14, 11, 26, 0.85);
+  backdrop-filter: blur(20px);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  padding: 32px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 480px;
+  max-height: 580px;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.publicLobbiesPanel:hover {
+  border-color: var(--line-active);
+  box-shadow: 0 40px 100px rgba(126, 34, 206, 0.15);
+}
+
+.publicLobbiesPanel::before {
+  content: "";
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--teal), var(--amber), transparent);
+  opacity: 0.5;
+}
+
+.publicLobbiesList {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  flex: 1;
+  padding-right: 4px;
+}
+
+.publicLobbyRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.01);
+  transition: all 0.2s ease;
+}
+
+.publicLobbyRow:hover {
+  border-color: var(--line-active);
+  background: rgba(255, 255, 255, 0.04);
+  transform: translateX(2px);
+}
+
+.lobbyRowMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+.lobbyRowMeta strong {
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.lobbyRowMovie {
+  font-size: 0.85rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.lobbyRowActions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.lobbyRowCount {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--amber);
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.2);
+  border-radius: 999px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+
+.primaryButton.compact {
+  min-height: 36px;
+  height: 36px;
+  padding: 0 16px;
+  font-size: 0.9rem;
+}
+
+.noLobbies {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 0.95rem;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  min-height: 120px;
+}
+
+@media (max-width: 768px) {
+  .entryGrid {
+    grid-template-columns: 1fr;
+  }
 }
