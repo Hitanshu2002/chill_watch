@@ -160,6 +160,7 @@ function App() {
   const [movieUrl, setMovieUrl] = useState<string | null>(null);
   const [movieFileName, setMovieFileName] = useState<string | null>(null);
   const [movieCompatibility, setMovieCompatibility] = useState<string | null>(null);
+  const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(false);
 
   const hostMovieRef = useRef<HTMLVideoElement | null>(null);
   const guestMovieRef = useRef<HTMLVideoElement | null>(null);
@@ -347,11 +348,19 @@ function App() {
 
     if (remoteMovieStream) {
       video.srcObject = remoteMovieStream;
-      void video.play().catch(() => undefined);
+      video.play().then(() => {
+        setIsAutoplayBlocked(false);
+      }).catch((err) => {
+        if (err.name === "NotAllowedError") {
+          console.warn("Autoplay blocked for movie stream. Showing unmute overlay.");
+          setIsAutoplayBlocked(true);
+        }
+      });
       return;
     }
 
     video.srcObject = null;
+    setIsAutoplayBlocked(false);
   }, [remoteMovieStream]);
 
   useEffect(() => {
@@ -581,6 +590,15 @@ function App() {
     }
   }
 
+  function handleUnmuteAutoplay() {
+    const video = guestMovieRef.current;
+    if (video) {
+      video.play().then(() => {
+        setIsAutoplayBlocked(false);
+      }).catch((e) => console.error("Still blocked:", e));
+    }
+  }
+
   function unloadMovie() {
     setMovieUrl((current) => {
       if (current) URL.revokeObjectURL(current);
@@ -704,6 +722,8 @@ function App() {
               movieShellRef={movieShellRef}
               hasRemoteMovie={Boolean(remoteMovieStream)}
               isTheaterMode={isTheaterMode}
+              isAutoplayBlocked={isAutoplayBlocked}
+              onUnmute={handleUnmuteAutoplay}
               onMovieFile={handleMovieFile}
               onLoaded={handleMovieLoaded}
               onPlay={() => emitMovieState("movie:state")}
@@ -939,6 +959,8 @@ function MoviePanel({
   movieShellRef,
   hasRemoteMovie,
   isTheaterMode,
+  isAutoplayBlocked,
+  onUnmute,
   onMovieFile,
   onLoaded,
   onPlay,
@@ -963,6 +985,8 @@ function MoviePanel({
   movieShellRef: React.MutableRefObject<HTMLDivElement | null>;
   hasRemoteMovie: boolean;
   isTheaterMode: boolean;
+  isAutoplayBlocked: boolean;
+  onUnmute: () => void;
   onMovieFile: (event: ChangeEvent<HTMLInputElement>) => void;
   onLoaded: () => void;
   onPlay: () => void;
@@ -1004,7 +1028,16 @@ function MoviePanel({
             </div>
           )
         ) : hasRemoteMovie ? (
-          <video ref={guestMovieRef} className="movieVideo" autoPlay playsInline controls={false} />
+          <div style={{ position: "relative", width: "100%", height: "100%" }}>
+            <video ref={guestMovieRef} className="movieVideo" autoPlay playsInline controls={false} />
+            {isAutoplayBlocked && (
+              <div className="autoplayOverlay" onClick={onUnmute}>
+                <Volume2 size={36} />
+                <span>Autoplay Blocked by Browser</span>
+                <button className="primaryButton" type="button">Click to Enable Audio</button>
+              </div>
+            )}
+          </div>
         ) : (
           <div className="movieEmpty">
             <Radio size={48} />
