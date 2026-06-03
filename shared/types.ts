@@ -28,6 +28,14 @@ export type MovieMeta = {
   playbackRate: number;
 };
 
+export type ChatMessage = {
+  id: string;
+  senderId: string;
+  senderName: string;
+  text: string;
+  timestamp: number;
+};
+
 export type LobbySnapshot = {
   code: string;
   hostId: string;
@@ -36,7 +44,9 @@ export type LobbySnapshot = {
   movie: MovieMeta | null;
   theaterMode: boolean;
   isPublic?: boolean;
+  messages?: ChatMessage[];
 };
+
 
 export type ServerAck<T = unknown> =
   | ({ ok: true } & T)

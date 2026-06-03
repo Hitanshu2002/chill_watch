@@ -38,6 +38,36 @@ function peerIdFromKey(key: string) {
   return key.slice(key.indexOf(":") + 1);
 }
 
+function optimizeSdp(sdp: string, channel: WebRtcChannel): string {
+  if (channel !== "movie") return sdp;
+
+  const lines = sdp.split("\r\n");
+  let opusPayloadType: string | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes("opus/48000")) {
+      const match = lines[i].match(/a=rtpmap:(\d+)\s+opus\/48000/);
+      if (match) {
+        opusPayloadType = match[1];
+        break;
+      }
+    }
+  }
+
+  if (opusPayloadType) {
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].startsWith(`a=fmtp:${opusPayloadType}`)) {
+        if (!lines[i].includes("stereo=1")) {
+          lines[i] = lines[i] + ";stereo=1;sprop-stereo=1;maxaveragebitrate=256000;useinbandfec=1";
+        }
+        break;
+      }
+    }
+  }
+
+  return lines.join("\r\n");
+}
+
 function addMissingTracks(peer: RTCPeerConnection, stream: MediaStream | null, isMovie: boolean = false) {
   if (!stream) return false;
 
@@ -73,7 +103,7 @@ function addMissingTracks(peer: RTCPeerConnection, stream: MediaStream | null, i
             if (!parameters.encodings) {
               parameters.encodings = [{}];
             }
-            parameters.encodings[0].maxBitrate = 8000000; // 8 Mbps for high quality movie stream
+            parameters.encodings[0].maxBitrate = 2000000; // 2 Mbps for high quality movie stream
             parameters.encodings[0].priority = "high";
             parameters.encodings[0].networkPriority = "high";
             void sender.setParameters(parameters).catch((err) => {
@@ -133,8 +163,8 @@ export function useWebRtc({
           stream = await navigator.mediaDevices.getUserMedia({
             audio: {
               echoCancellation: true,
-              noiseSuppression: false,
-              autoGainControl: false
+              noiseSuppression: true,
+              autoGainControl: true
             },
             video: {
               width: { ideal: 960 },
@@ -147,8 +177,8 @@ export function useWebRtc({
           stream = await navigator.mediaDevices.getUserMedia({
             audio: {
               echoCancellation: true,
-              noiseSuppression: false,
-              autoGainControl: false
+              noiseSuppression: true,
+              autoGainControl: true
             },
             video: false
           });
@@ -232,7 +262,8 @@ export function useWebRtc({
       try {
         makingOfferRef.current.add(key);
         const offer = await peer.createOffer();
-        await peer.setLocalDescription(offer);
+        const optimizedSdp = optimizeSdp(offer.sdp ?? "", channel);
+        await peer.setLocalDescription({ type: "offer", sdp: optimizedSdp });
         socket.emit("webrtc:offer", {
           to: participantId,
           channel,
@@ -268,14 +299,22 @@ export function useWebRtc({
         const [stream] = event.streams;
         const mediaStream = stream ?? new MediaStream([event.track]);
 
+        if (event.receiver && "playoutDelayHint" in event.receiver) {
+          try {
+            (event.receiver as any).playoutDelayHint = 0;
+          } catch (e) {
+            console.warn("Failed to set playoutDelayHint:", e);
+          }
+        }
+
         if (channel === "movie") {
-          setRemoteMovieStream(new MediaStream(mediaStream.getTracks()));
+          setRemoteMovieStream(stream || new MediaStream(mediaStream.getTracks()));
           return;
         }
 
         setRemoteMediaStreams((current) => ({
           ...current,
-          [participantId]: new MediaStream(mediaStream.getTracks())
+          [participantId]: stream || new MediaStream(mediaStream.getTracks())
         }));
       };
 
@@ -306,6 +345,7 @@ export function useWebRtc({
           if (channel === "movie") {
             setRemoteMovieStream(null);
           }
+          closePeer(key);
         }
       };
 
@@ -315,7 +355,15 @@ export function useWebRtc({
         }
 
         if (channel === "media") {
-          void negotiate(channel, participantId);
+          const isOfferer = selfId > participantId;
+          if (isOfferer) {
+            void negotiate(channel, participantId);
+          } else {
+            socket.emit("webrtc:negotiate-needed", {
+              to: participantId,
+              channel
+            });
+          }
         }
       };
 
@@ -342,8 +390,18 @@ export function useWebRtc({
       const mediaPeer = ensurePeer("media", participant.id);
       const addedMediaTracks = addMissingTracks(mediaPeer, localStreamRef.current);
 
-      if (addedMediaTracks || !mediaPeer.localDescription) {
-        void negotiate("media", participant.id);
+      const isOfferer = selfId > participant.id;
+      if (isOfferer) {
+        if (addedMediaTracks || !mediaPeer.localDescription) {
+          void negotiate("media", participant.id);
+        }
+      } else {
+        if (addedMediaTracks) {
+          socket.emit("webrtc:negotiate-needed", {
+            to: participant.id,
+            channel: "media"
+          });
+        }
       }
 
       if (isHost && movieStreamRef.current && participant.role === "guest") {
@@ -374,19 +432,7 @@ export function useWebRtc({
         addMissingTracks(peer, localStreamRef.current);
       }
 
-      const offerCollision = makingOfferRef.current.has(key) || peer.signalingState !== "stable";
-      const polite = selfId > signal.from || signal.channel === "movie";
-
-      if (offerCollision && !polite) return;
-
       try {
-        if (offerCollision) {
-          try {
-            await peer.setLocalDescription({ type: "rollback" });
-          } catch (rollbackErr) {
-            console.warn("Rollback failed:", rollbackErr);
-          }
-        }
         await peer.setRemoteDescription(new RTCSessionDescription(signal.description));
         await flushCandidates(key, peer);
 
@@ -395,7 +441,8 @@ export function useWebRtc({
         }
 
         const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
+        const optimizedSdp = optimizeSdp(answer.sdp ?? "", signal.channel);
+        await peer.setLocalDescription({ type: "answer", sdp: optimizedSdp });
         socket.emit("webrtc:answer", {
           to: signal.from,
           channel: signal.channel,
@@ -441,14 +488,23 @@ export function useWebRtc({
       }
     }
 
+    function handleNegotiateNeeded(signal: WebRtcSignal) {
+      const isOfferer = signal.channel === "movie" ? isHostRef.current : (selfId > signal.from);
+      if (isOfferer) {
+        void negotiate(signal.channel, signal.from);
+      }
+    }
+
     socket.on("webrtc:offer", handleOffer);
     socket.on("webrtc:answer", handleAnswer);
     socket.on("webrtc:ice-candidate", handleCandidate);
+    socket.on("webrtc:negotiate-needed", handleNegotiateNeeded);
 
     return () => {
       socket.off("webrtc:offer", handleOffer);
       socket.off("webrtc:answer", handleAnswer);
       socket.off("webrtc:ice-candidate", handleCandidate);
+      socket.off("webrtc:negotiate-needed", handleNegotiateNeeded);
     };
   }, [closePeer, ensurePeer, flushCandidates, selfId, socket]);
 

@@ -29,9 +29,13 @@ import {
   Video,
   VideoOff,
   Volume2,
-  X
+  X,
+  MessageSquare,
+  Send,
+  ChevronLeft,
+  ChevronRight
 } from "lucide-react";
-import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
 import { io } from "socket.io-client";
 import type {
   FilterId,
@@ -41,7 +45,8 @@ import type {
   MovieStatePayload,
   Participant,
   Role,
-  ServerAck
+  ServerAck,
+  ChatMessage
 } from "../shared/types";
 import { useWebRtc } from "./hooks/useWebRtc";
 
@@ -131,13 +136,22 @@ function formatTime(value: number) {
   return `${minutes}:${seconds.toString().padStart(2, "0")}`;
 }
 
+function playAllMediaElements() {
+  document.querySelectorAll("video, audio").forEach((el) => {
+    const media = el as HTMLVideoElement | HTMLAudioElement;
+    if (media.srcObject || media.src) {
+      void media.play().catch((err) => console.warn("Failed to play media element on gesture:", err));
+    }
+  });
+}
+
 function captureVideoElement(video: HTMLVideoElement) {
   const captureTarget = video as HTMLVideoElement & {
-    captureStream?: () => MediaStream;
-    mozCaptureStream?: () => MediaStream;
+    captureStream?: (fps?: number) => MediaStream;
+    mozCaptureStream?: (fps?: number) => MediaStream;
   };
 
-  return captureTarget.captureStream?.() ?? captureTarget.mozCaptureStream?.() ?? null;
+  return captureTarget.captureStream?.(24) ?? captureTarget.mozCaptureStream?.(24) ?? null;
 }
 
 function mergeMovie(snapshot: LobbySnapshot | null, movie: MovieStatePayload | null) {
@@ -165,6 +179,27 @@ function App() {
   const [isAutoplayBlocked, setIsAutoplayBlocked] = useState(false);
   const [isLobbyPublic, setIsLobbyPublic] = useState(false);
   const [publicLobbies, setPublicLobbies] = useState<any[]>([]);
+
+  // Chat & UI Layout States
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [isLeftMinimized, setIsLeftMinimized] = useState(false);
+  const [isRightMinimized, setIsRightMinimized] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [activeNotification, setActiveNotification] = useState<{
+    message: ChatMessage;
+    friends: Participant[];
+  } | null>(null);
+
+  // Auto-dismiss message notification popup
+  useEffect(() => {
+    if (!activeNotification) return;
+    const timer = setTimeout(() => {
+      setActiveNotification(null);
+    }, 6000);
+    return () => clearTimeout(timer);
+  }, [activeNotification]);
 
   const hostMovieRef = useRef<HTMLVideoElement | null>(null);
   const guestMovieRef = useRef<HTMLVideoElement | null>(null);
@@ -199,6 +234,9 @@ function App() {
   const applySnapshot = useCallback(
     (snapshot: LobbySnapshot) => {
       setLobby(snapshot);
+      if (snapshot.messages) {
+        setChatMessages(snapshot.messages);
+      }
 
       const participant = snapshot.participants.find((item) => item.id === sessionId);
       if (!participant) return;
@@ -332,6 +370,31 @@ function App() {
       socket.emit("participant:update", { micEnabled: !payload.muted });
     });
 
+    function handleChatMessage(message: ChatMessage) {
+      setChatMessages((current) => [...current, message]);
+      
+      setIsChatOpen((open) => {
+        if (!open && message.senderId !== sessionId) {
+          setUnreadCount((c) => c + 1);
+        }
+        return open;
+      });
+
+      if (message.senderId !== sessionId) {
+        setLobby((currentLobby) => {
+          if (currentLobby) {
+            setActiveNotification({
+              message,
+              friends: currentLobby.participants
+            });
+          }
+          return currentLobby;
+        });
+      }
+    }
+
+    socket.on("chat:message", handleChatMessage);
+
     return () => {
       socket.off("participant:list", handleSnapshot);
       socket.off("lobby:pending", handlePending);
@@ -346,6 +409,7 @@ function App() {
       socket.off("movie:unloaded");
       socket.off("permission:error");
       socket.off("participant:muted-by-host");
+      socket.off("chat:message", handleChatMessage);
     };
   }, [applySnapshot, clearMovieStream, lobby?.participants, sessionId]);
 
@@ -408,6 +472,25 @@ function App() {
       document.removeEventListener("fullscreenchange", handleFullscreenChange);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isInLobby) return;
+
+    const unlock = () => {
+      playAllMediaElements();
+      if (hostAudioContextRef.current && hostAudioContextRef.current.state === "suspended") {
+        void hostAudioContextRef.current.resume();
+      }
+    };
+
+    window.addEventListener("click", unlock);
+    window.addEventListener("touchstart", unlock);
+
+    return () => {
+      window.removeEventListener("click", unlock);
+      window.removeEventListener("touchstart", unlock);
+    };
+  }, [isInLobby]);
 
   function currentMovieState() {
     const video = hostMovieRef.current;
@@ -581,33 +664,6 @@ function App() {
     const video = hostMovieRef.current;
     if (!video) return;
 
-    // Route audio to local speakers so host can hear it while capturing
-    try {
-      if (!hostAudioContextRef.current) {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        hostAudioContextRef.current = new AudioContextClass();
-      }
-
-      const audioCtx = hostAudioContextRef.current;
-      if (audioCtx.state === "suspended") {
-        void audioCtx.resume();
-      }
-
-      if (!hostAudioSourceRef.current) {
-        const source = audioCtx.createMediaElementSource(video);
-        source.connect(audioCtx.destination);
-        
-        const dest = audioCtx.createMediaStreamDestination();
-        source.connect(dest);
-        
-        hostAudioSourceRef.current = source;
-        hostAudioDestRef.current = dest;
-        console.log("Connected video element audio to Web Audio destination and media stream destination successfully");
-      }
-    } catch (e) {
-      console.warn("Web Audio routing failed or already connected:", e);
-    }
-
     const videoStream = captureVideoElement(video);
     if (!videoStream) {
       setMovieCompatibility("Movie streaming needs a Chromium browser with captureStream support.");
@@ -615,14 +671,48 @@ function App() {
     }
 
     let finalStream = videoStream;
-    if (hostAudioDestRef.current) {
-      const videoTracks = videoStream.getVideoTracks();
-      const audioTracks = hostAudioDestRef.current.stream.getAudioTracks();
-      finalStream = new MediaStream([
-        ...videoTracks,
-        ...audioTracks
-      ]);
-      console.log("Combined video capture stream with Web Audio destination audio track");
+    const nativeAudioTracks = videoStream.getAudioTracks();
+
+    if (nativeAudioTracks.length === 0) {
+      console.log("No native audio track in captureStream, setting up Web Audio capture");
+      // Route audio to local speakers so host can hear it while capturing
+      try {
+        if (!hostAudioContextRef.current) {
+          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+          hostAudioContextRef.current = new AudioContextClass();
+        }
+
+        const audioCtx = hostAudioContextRef.current;
+        if (audioCtx.state === "suspended") {
+          void audioCtx.resume();
+        }
+
+        if (!hostAudioSourceRef.current) {
+          const source = audioCtx.createMediaElementSource(video);
+          source.connect(audioCtx.destination);
+          
+          const dest = audioCtx.createMediaStreamDestination();
+          source.connect(dest);
+          
+          hostAudioSourceRef.current = source;
+          hostAudioDestRef.current = dest;
+          console.log("Connected video element audio to Web Audio destination and media stream destination successfully");
+        }
+      } catch (e) {
+        console.warn("Web Audio routing failed or already connected:", e);
+      }
+
+      if (hostAudioDestRef.current) {
+        const videoTracks = videoStream.getVideoTracks();
+        const audioTracks = hostAudioDestRef.current.stream.getAudioTracks();
+        finalStream = new MediaStream([
+          ...videoTracks,
+          ...audioTracks
+        ]);
+        console.log("Combined video capture stream with Web Audio destination audio track");
+      }
+    } else {
+      console.log("Using native captureStream audio tracks directly to prevent echo:", nativeAudioTracks.length);
     }
 
     publishMovieStream(finalStream);
@@ -687,12 +777,8 @@ function App() {
   }
 
   function handleUnmuteAutoplay() {
-    const video = guestMovieRef.current;
-    if (video) {
-      video.play().then(() => {
-        setIsAutoplayBlocked(false);
-      }).catch((e) => console.error("Still blocked:", e));
-    }
+    playAllMediaElements();
+    setIsAutoplayBlocked(false);
   }
 
   function unloadMovie() {
@@ -760,8 +846,19 @@ function App() {
   }
 
   if (view === "lobby" && lobby && self) {
+    function handleSendChat(event: FormEvent) {
+      event.preventDefault();
+      const text = chatInput.trim();
+      if (!text) return;
+      socket.emit("chat:send", { text });
+      setChatInput("");
+    }
+
     return (
-      <main ref={lobbyShellRef} className={`lobbyShell ${isTheaterMode ? "theaterMode" : ""}`}>
+      <main 
+        ref={lobbyShellRef} 
+        className={`lobbyShell ${isTheaterMode ? "theaterMode" : ""} ${isLeftMinimized ? "left-minimized" : ""} ${isRightMinimized ? "right-minimized" : ""}`}
+      >
         <header className="lobbyTopbar">
           <div className="brandLockup">
             <div className="brandMark">
@@ -790,21 +887,55 @@ function App() {
         {mediaError && <div className="noticeBar warning">{mediaError}</div>}
 
         <section className="watchGrid">
-          <aside className="peopleRail leftRail">
-            {leftRail.map((participant) => (
-              <ParticipantTile
-                key={participant.id}
-                participant={participant}
-                selfId={sessionId}
-                stream={participant.id === sessionId ? localStream : remoteMediaStreams[participant.id]}
-                canRemove={isHost && participant.role === "guest"}
-                onRemove={removeParticipant}
-                canMute={isHost && participant.role === "guest"}
-                onMute={handleMuteParticipant}
-              />
-            ))}
+          {/* Left Rail (15%) */}
+          <aside className={`peopleRail leftRail ${isLeftMinimized ? "minimized" : ""}`}>
+            <div className="railHeader">
+              {!isLeftMinimized && <span className="railTitle">Members L ({leftRail.length})</span>}
+              <button 
+                className="railMinimizeButton" 
+                type="button" 
+                onClick={() => setIsLeftMinimized(!isLeftMinimized)}
+                title={isLeftMinimized ? "Expand Left" : "Minimize Left"}
+              >
+                {isLeftMinimized ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+              </button>
+            </div>
+            
+            {!isLeftMinimized ? (
+              <div className="railContent">
+                {leftRail.map((participant) => (
+                  <ParticipantTile
+                    key={participant.id}
+                    participant={participant}
+                    selfId={sessionId}
+                    stream={participant.id === sessionId ? localStream : remoteMediaStreams[participant.id]}
+                    canRemove={isHost && participant.role === "guest"}
+                    onRemove={removeParticipant}
+                    canMute={isHost && participant.role === "guest"}
+                    onMute={handleMuteParticipant}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="railContentMinimized">
+                {leftRail.map((participant) => {
+                  const isSelf = participant.id === sessionId;
+                  return (
+                    <div 
+                      key={participant.id} 
+                      className={`minimizedParticipantIcon filter-${participant.filter} ${participant.connection === "reconnecting" ? "reconnecting" : ""}`}
+                      title={`${participant.name} (${participant.role === "host" ? "Host" : isSelf ? "You" : "Guest"})`}
+                    >
+                      {initials(participant.name)}
+                      <span className={`statusIndicatorDot ${participant.connection === "online" ? "online" : "reconnecting"}`} />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </aside>
 
+          {/* Movie Stage (70%) */}
           <section className="movieStage">
             <MoviePanel
               isHost={isHost}
@@ -835,19 +966,52 @@ function App() {
             />
           </section>
 
-          <aside className="peopleRail rightRail">
-            {rightRail.map((participant) => (
-              <ParticipantTile
-                key={participant.id}
-                participant={participant}
-                selfId={sessionId}
-                stream={participant.id === sessionId ? localStream : remoteMediaStreams[participant.id]}
-                canRemove={isHost && participant.role === "guest"}
-                onRemove={removeParticipant}
-                canMute={isHost && participant.role === "guest"}
-                onMute={handleMuteParticipant}
-              />
-            ))}
+          {/* Right Rail (15%) */}
+          <aside className={`peopleRail rightRail ${isRightMinimized ? "minimized" : ""}`}>
+            <div className="railHeader">
+              {!isRightMinimized && <span className="railTitle">Members R ({rightRail.length})</span>}
+              <button 
+                className="railMinimizeButton" 
+                type="button" 
+                onClick={() => setIsRightMinimized(!isRightMinimized)}
+                title={isRightMinimized ? "Expand Right" : "Minimize Right"}
+              >
+                {isRightMinimized ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+              </button>
+            </div>
+            
+            {!isRightMinimized ? (
+              <div className="railContent">
+                {rightRail.map((participant) => (
+                  <ParticipantTile
+                    key={participant.id}
+                    participant={participant}
+                    selfId={sessionId}
+                    stream={participant.id === sessionId ? localStream : remoteMediaStreams[participant.id]}
+                    canRemove={isHost && participant.role === "guest"}
+                    onRemove={removeParticipant}
+                    canMute={isHost && participant.role === "guest"}
+                    onMute={handleMuteParticipant}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="railContentMinimized">
+                {rightRail.map((participant) => {
+                  const isSelf = participant.id === sessionId;
+                  return (
+                    <div 
+                      key={participant.id} 
+                      className={`minimizedParticipantIcon filter-${participant.filter} ${participant.connection === "reconnecting" ? "reconnecting" : ""}`}
+                      title={`${participant.name} (${participant.role === "host" ? "Host" : isSelf ? "You" : "Guest"})`}
+                    >
+                      {initials(participant.name)}
+                      <span className={`statusIndicatorDot ${participant.connection === "online" ? "online" : "reconnecting"}`} />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </aside>
         </section>
 
@@ -859,6 +1023,22 @@ function App() {
           <button className={micEnabled ? "controlButton active" : "controlButton"} type="button" onClick={toggleMic}>
             {micEnabled ? <Mic size={19} /> : <MicOff size={19} />}
             Mic
+          </button>
+
+          {/* Floating/Overlay Chat Button in dock */}
+          <button 
+            className={`controlButton chatBtn ${isChatOpen ? "active" : ""} ${unreadCount > 0 ? "hasUnread" : ""}`} 
+            type="button" 
+            onClick={() => {
+              setIsChatOpen(!isChatOpen);
+              setUnreadCount(0);
+            }}
+          >
+            <div className="chatBtnContent">
+              <MessageSquare size={19} />
+              <span>Chat</span>
+              {unreadCount > 0 && !isChatOpen && <span className="dockChatUnreadBadge">{unreadCount}</span>}
+            </div>
           </button>
 
           <div className="filterGroup" aria-label="Camera filter">
@@ -901,6 +1081,109 @@ function App() {
               </div>
             ))}
           </section>
+        )}
+
+        {/* Floating/Overlay Chatbox Panel */}
+        {isChatOpen && (
+          <aside className="chatFloatingPanel">
+            <div className="chatFloatingHeader">
+              <div className="chatFloatingTitle">
+                <MessageSquare size={16} />
+                <span>Lobby Chat</span>
+              </div>
+              <button 
+                className="chatMinimizeButton" 
+                type="button" 
+                onClick={() => setIsChatOpen(false)}
+                title="Minimize Chat"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="chatContainer">
+              <div className="chatMessagesLog">
+                {chatMessages.length === 0 ? (
+                  <div className="chatEmptyState">
+                    <span>No messages yet. Say hello!</span>
+                  </div>
+                ) : (
+                  chatMessages.map((msg) => {
+                    const isSelfMsg = msg.senderId === sessionId;
+                    return (
+                      <div key={msg.id} className={`chatMessageRow ${isSelfMsg ? "self" : "other"}`}>
+                        <div className="chatMessageBubble">
+                          {!isSelfMsg && <span className="chatMessageSenderName">{msg.senderName}</span>}
+                          <p className="chatMessageText">{msg.text}</p>
+                          <span className="chatMessageTime">
+                            {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              <form className="chatInputArea" onSubmit={handleSendChat}>
+                <input
+                  type="text"
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  placeholder="Type a message..."
+                  maxLength={300}
+                />
+                <button type="submit" disabled={!chatInput.trim()}>
+                  <Send size={15} />
+                </button>
+              </form>
+            </div>
+          </aside>
+        )}
+
+        {/* Floating Message Notification Popup */}
+        {activeNotification && (
+          <div className="messagePopupToast" onClick={() => {
+            setIsChatOpen(true);
+            setUnreadCount(0);
+            setActiveNotification(null);
+          }}>
+            <div className="messagePopupHeader">
+              <div className="messagePopupAvatar">
+                {initials(activeNotification.message.senderName)}
+              </div>
+              <div className="messagePopupMeta">
+                <span className="messagePopupTitle">New Message</span>
+                <span className="messagePopupSender">{activeNotification.message.senderName}</span>
+              </div>
+              <button 
+                className="messagePopupClose" 
+                type="button" 
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setActiveNotification(null);
+                }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="messagePopupBody">
+              <p>"{activeNotification.message.text}"</p>
+            </div>
+            <div className="messagePopupFooter">
+              <span className="partyCountLabel">Friends in Party ({activeNotification.friends.length}):</span>
+              <div className="partyAvatarGroup">
+                {activeNotification.friends.map((friend) => (
+                  <span 
+                    key={friend.id} 
+                    className={`partyMiniAvatar filter-${friend.filter}`} 
+                    title={friend.name}
+                  >
+                    {initials(friend.name)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
         )}
       </main>
     );
@@ -1027,7 +1310,7 @@ function App() {
   );
 }
 
-function ParticipantTile({
+const ParticipantTile = memo(function ParticipantTile({
   participant,
   selfId,
   stream,
@@ -1101,7 +1384,7 @@ function ParticipantTile({
       </div>
     </article>
   );
-}
+});
 
 function MoviePanel({
   isHost,

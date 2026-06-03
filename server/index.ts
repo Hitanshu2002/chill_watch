@@ -15,7 +15,8 @@ import type {
   Role,
   ServerAck,
   WebRtcSignal,
-  PublicLobbyInfo
+  PublicLobbyInfo,
+  ChatMessage
 } from "../shared/types.js";
 
 type SocketContext = {
@@ -36,6 +37,7 @@ type Lobby = {
   theaterMode: boolean;
   isPublic: boolean;
   createdAt: number;
+  messages: ChatMessage[];
 };
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -105,7 +107,8 @@ function snapshot(lobby: Lobby): LobbySnapshot {
     pendingRequests: Array.from(lobby.pendingRequests.values()).map(({ socketId: _socketId, ...request }) => request),
     movie: lobby.movie,
     theaterMode: lobby.theaterMode,
-    isPublic: lobby.isPublic
+    isPublic: lobby.isPublic,
+    messages: lobby.messages
   };
 }
 
@@ -216,7 +219,7 @@ function sendAck<T>(callback: unknown, response: ServerAck<T>) {
   }
 }
 
-function relayWebRtc(socket: Socket, event: "webrtc:offer" | "webrtc:answer" | "webrtc:ice-candidate", payload: WebRtcSignal) {
+function relayWebRtc(socket: Socket, event: "webrtc:offer" | "webrtc:answer" | "webrtc:ice-candidate" | "webrtc:negotiate-needed", payload: WebRtcSignal) {
   const active = getLobbyFromSocket(socket);
   if (!active) return;
 
@@ -252,7 +255,8 @@ io.on("connection", (socket) => {
       movie: null,
       theaterMode: false,
       isPublic: Boolean(payload.isPublic),
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      messages: []
     };
 
     lobbies.set(code, lobby);
@@ -472,6 +476,7 @@ io.on("connection", (socket) => {
   socket.on("webrtc:offer", (payload: WebRtcSignal) => relayWebRtc(socket, "webrtc:offer", payload));
   socket.on("webrtc:answer", (payload: WebRtcSignal) => relayWebRtc(socket, "webrtc:answer", payload));
   socket.on("webrtc:ice-candidate", (payload: WebRtcSignal) => relayWebRtc(socket, "webrtc:ice-candidate", payload));
+  socket.on("webrtc:negotiate-needed", (payload: WebRtcSignal) => relayWebRtc(socket, "webrtc:negotiate-needed", payload));
 
   socket.on("movie:ready", (payload: MovieStatePayload) => {
     const active = getLobbyFromSocket(socket);
@@ -489,7 +494,6 @@ io.on("connection", (socket) => {
     if (!active || !isHost(socket, active.lobby)) return;
     active.lobby.movie = payload;
     socket.to(active.lobby.code).emit("movie:state", payload);
-    emitSnapshot(active.lobby);
   });
 
   socket.on("movie:ended", (payload: MovieStatePayload) => {
@@ -539,6 +543,25 @@ io.on("connection", (socket) => {
       participantId: active.context.sessionId,
       message: payload.message
     });
+  });
+
+  socket.on("chat:send", (payload: { text: string }) => {
+    const active = getLobbyFromSocket(socket);
+    if (!active) return;
+    const { lobby, context } = active;
+    const sender = lobby.participants.get(context.sessionId);
+    const message: ChatMessage = {
+      id: crypto.randomUUID(),
+      senderId: context.sessionId,
+      senderName: sender?.name ?? "Unknown",
+      text: payload.text,
+      timestamp: Date.now()
+    };
+    lobby.messages.push(message);
+    if (lobby.messages.length > 100) {
+      lobby.messages.shift();
+    }
+    io.to(lobby.code).emit("chat:message", message);
   });
 
   socket.on("disconnect", () => {
